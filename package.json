@@ -1,0 +1,10 @@
+{
+  "name": "apuracao-github-pages",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "update": "node scripts/update-results.mjs",
+    "build": "node scripts/build.mjs",
+    "test": "node --test scripts/results.test.mjs"
+  }
+}
