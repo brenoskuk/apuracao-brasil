@@ -63,3 +63,51 @@ test('client retains newer saved data when published snapshot regresses',async()
   assert.equal(vm.runInContext('results.sp.hg',context),'20:30:00');
   assert.equal(vm.runInContext('failed.has("sp")',context),true);
 });
+
+async function liveContext(fetch){
+  const src=await fs.readFile(new URL('../app.js',import.meta.url),'utf8');
+  const elements=new Map();
+  const document={querySelector(selector){if(!elements.has(selector))elements.set(selector,{style:{},firstElementChild:{}});return elements.get(selector);}};
+  const context=vm.createContext({areas:['br','sp'],accept,Intl,Date,Math,Set,Number,String,JSON,Promise,AbortSignal,document,fetch,localStorage:{setItem(){}}});
+  vm.runInContext(src.replace(/^import[^\n]*\n/,'').split("$('#refresh').addEventListener")[0],context);
+  vm.runInContext('render=()=>{}',context);
+  return context;
+}
+test('live refresh fetches TSE directly and changes the source mode without a GitHub request',async()=>{
+  const urls=[];
+  const context=await liveContext(async(url,options)=>{
+    urls.push(url);
+    assert.equal(options.mode,'cors');assert.equal(options.credentials,'omit');assert.equal(options.cache,'no-store');
+    const uf=url.includes('/dados/br/')?'br':'sp';
+    return{ok:true,json:async()=>structuredClone(data.results[uf])};
+  });
+  await vm.runInContext('refresh()',context);
+  assert.equal(urls.length,2);assert.ok(urls.every(url=>url.startsWith('https://resultados.tse.jus.br/')));
+  assert.equal(vm.runInContext('sourceMode',context),'live');
+  assert.equal(vm.runInContext('failed.size',context),0);
+  assert.equal(vm.runInContext('refreshInterval',context),30000);
+});
+test('failed direct access falls back to the saved snapshot and identifies the fallback',async()=>{
+  const urls=[];
+  const context=await liveContext(async(url)=>{
+    urls.push(url);
+    if(url.startsWith('https://'))throw Error('Network blocked');
+    return{ok:true,json:async()=>structuredClone(data)};
+  });
+  await vm.runInContext('refresh()',context);
+  assert.equal(vm.runInContext('sourceMode',context),'snapshot');
+  assert.equal(vm.runInContext('results.br.hg',context),data.results.br.hg);
+  assert.ok(urls.some(url=>url.startsWith('./data/snapshot.json')));
+});
+test('partial live failures retain previous geographic data and remain marked',async()=>{
+  const context=await liveContext(async(url)=>{
+    if(url.includes('/dados/sp/'))throw Error('Temporary timeout');
+    return{ok:true,json:async()=>structuredClone(data.results.br)};
+  });
+  context.seed=structuredClone(data);
+  vm.runInContext('applySnapshot(seed)',context);
+  await vm.runInContext('refresh()',context);
+  assert.equal(vm.runInContext('sourceMode',context),'live');
+  assert.equal(vm.runInContext('failed.has("sp")',context),true);
+  assert.equal(vm.runInContext('results.sp.hg',context),data.results.sp.hg);
+});
