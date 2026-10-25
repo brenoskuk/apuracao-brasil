@@ -14,7 +14,8 @@ The workflow uses GitHub's built-in token. Do not add a personal token. Reposito
 
 ## Updates and limitations
 
-- GitHub is scheduled to collect TSE data approximately every five minutes. Scheduling and publishing can be delayed. The open page checks the published snapshot every minute; the Refresh button checks that snapshot, not TSE directly.
+- The visible page checks official TSE files directly every 30 seconds, with four requests at a time and a 12-second batch timeout. Refresh requests TSE immediately. Hidden tabs pause requests and refresh when shown again. TSE caching/publication can still yield unchanged counts.
+- GitHub also collects fallback snapshots approximately every five minutes. Scheduling and publishing can be delayed. If direct browser access fails, the page uses the published fallback snapshot or its last saved data and clearly identifies this state.
 - The included starting snapshot was collected from TSE on 25 October 2026. The page displays its collection time and labels it as delayed once that time is more than ten minutes old. A snapshot with no collection metadata is labeled as bundled data.
 - Failed areas retain their last data and are marked; older source generations cannot overwrite newer ones. Newer official corrections may legitimately reduce vote totals.
 - The badge distinguishes snapshot availability from source freshness. Last collection time and each area's TSE timestamps are exposed. A completed count need not keep changing.

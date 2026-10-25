@@ -17,7 +17,8 @@ function selectState(uf){selected=uf;renderMap();renderDetail();}
 function mapGeometry(){const svg=$('#map');const xy=([lon,lat])=>[(lon+74)*14.1,(6-lat)*14.3];for(const s of shapes){const g=s.geometry,polys=g.type==='MultiPolygon'?g.coordinates:[g.coordinates];const path=polys.map(poly=>poly.map(ring=>ring.map((p,i)=>(i?'L':'M')+xy(p).map(n=>n.toFixed(1)).join(',')).join('')+'Z').join('')).join('');const el=document.createElementNS('http://www.w3.org/2000/svg','path');el.setAttribute('d',path);el.setAttribute('id','state-'+s.uf.toLowerCase());el.setAttribute('class','state');el.setAttribute('fill-rule','evenodd');el.setAttribute('tabindex','0');el.setAttribute('role','button');el.setAttribute('aria-label',s.name);el.addEventListener('click',()=>selectState(s.uf.toLowerCase()));el.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();selectState(s.uf.toLowerCase());}});el.addEventListener('pointermove',e=>{const r=normalized(results[s.uf.toLowerCase()]),tip=$('#tooltip');tip.textContent=s.name+' · '+pct(r?.progress)+' totalized'+(r?.share!=null?' · '+(r.share>=.5?'Lula':'Bolsonaro')+' leads':' · no votes yet');tip.style.display='block';tip.style.left=Math.max(8,Math.min(e.clientX+12,innerWidth-300))+'px';tip.style.top=Math.max(8,e.clientY-48)+'px';});el.addEventListener('pointerleave',()=>$('#tooltip').style.display='none');svg.append(el);}
 const centers={AC:[-70,-9.3],AM:[-64,-4],RO:[-63,-11],RR:[-61,2],PA:[-53,-4],AP:[-52,1.5],TO:[-48.2,-10],MA:[-45,-5.2],PI:[-42.8,-7.7],CE:[-39.5,-5.2],RN:[-36.5,-5.6],PB:[-36.5,-7.2],PE:[-38,-8.6],AL:[-36.5,-9.7],SE:[-37.3,-11],BA:[-42,-12.5],MT:[-56,-13],MS:[-55,-20],GO:[-49.5,-16],DF:[-47.6,-15.3],MG:[-44.5,-18],ES:[-40.3,-19.8],RJ:[-42.5,-22.3],SP:[-48.5,-22.2],PR:[-51.5,-24.5],SC:[-50,-27],RS:[-53,-30]};for(const[uf,coord]of Object.entries(centers)){const el=document.createElementNS('http://www.w3.org/2000/svg','text');const[x,y]=xy(coord);el.setAttribute('x',x);el.setAttribute('y',y);el.setAttribute('text-anchor','middle');el.setAttribute('class','map-label');el.textContent=uf;svg.append(el);}}
 
-let metadata={receivedAt:{},changedAt:{}}, collectedAt=null;
+let metadata={receivedAt:{},changedAt:{}}, collectedAt=null, sourceMode='snapshot';
+const refreshInterval=30000;
 const storageKey='apuracao-pages-6258';
 function sourceOld(j){
   if(j?.tf==='s')return false;
@@ -35,7 +36,7 @@ function applySnapshot(data){
       results[uf]=incoming;
       for(const key of ['receivedAt','changedAt']){
         metadata[key]??={};
-        if(data[key]?.[uf])metadata[key][uf]=data[key][uf];
+        if(data[key]?.[uf]&&(!metadata[key][uf]||data[key][uf]>metadata[key][uf]))metadata[key][uf]=data[key][uf];
       }
     }catch{errors.add(uf);}
   }
@@ -45,29 +46,54 @@ function applySnapshot(data){
 function freshness(){
   const age=collectedAt?(Date.now()-Date.parse(collectedAt))/60000:Infinity;
   const quiet=areas.filter(uf=>sourceOld(results[uf])).length;
-  const warning=failed.size>0||age>10||quiet>0;
-  const label=!collectedAt?'Bundled snapshot':age>10?'Snapshot delayed':failed.size?'Partial snapshot':quiet?'Source unchanged':'Published TSE snapshot';
+  const warning=sourceMode!=='live'||failed.size>0||age>10||quiet>0;
+  const label=sourceMode==='offline'?'Offline · saved data':sourceMode==='live'?(failed.size?'Partial live update':age>10?'Live check delayed':quiet?'Live · source unchanged':'Live TSE · 30s checks'):!collectedAt?'Bundled snapshot':age>10?'Fallback snapshot delayed':'Fallback snapshot';
   $('#live-status').textContent=label;
   $('#live-status').style.color=warning?'#9b6a19':'#526b36';
   const checked=collectedAt?new Date(collectedAt).toLocaleString()+' (your time)':'not collected yet';
-  $('#notice').firstElementChild.textContent='Last collection: '+checked+'. New snapshots about every 5 minutes; publishing may take longer.'+(failed.size?' '+failed.size+' areas retained their previous data.':'')+(quiet?' '+quiet+' areas have no recent observed generation or are bundled data.':'');
+  $('#notice').firstElementChild.textContent=(sourceMode==='live'?'Last TSE check: ': 'Saved data collected: ')+checked+'. '+(sourceMode==='live'?'Checks TSE directly every 30 seconds while visible. TSE may publish less frequently.':'Direct TSE access is unavailable or has not completed. Showing the saved snapshot; retrying every 30 seconds.')+(failed.size?' '+failed.size+' areas retained their previous data.':'')+(quiet?' '+quiet+' areas have no recent observed generation or are bundled data.':'');
+}
+async function fetchLiveSnapshot(){
+  const queue=[...areas], next={...results}, errors={}, receivedAt={...metadata.receivedAt}, changedAt={...metadata.changedAt};
+  const signal=AbortSignal.timeout(12000);
+  let successful=0;
+  async function runner(){
+    while(queue.length){
+      const uf=queue.shift();
+      try{
+        const response=await fetch('https://resultados.tse.jus.br/oficial/ele2026/6258/dados/'+uf+'/'+uf+'-c0001-e006258-u.json',{mode:'cors',credentials:'omit',cache:'no-store',signal});
+        if(!response.ok)throw Error('TSE HTTP '+response.status);
+        const incoming=accept(results[uf],await response.json(),uf);
+        const now=new Date().toISOString();
+        if(!results[uf]||incoming.idg!==results[uf].idg||incoming.dg!==results[uf].dg||incoming.hg!==results[uf].hg)changedAt[uf]=now;
+        changedAt[uf]??=now;
+        next[uf]=incoming;receivedAt[uf]=now;successful++;
+      }catch(error){errors[uf]=error.message;}
+    }
+  }
+  await Promise.all(Array.from({length:4},runner));
+  if(!successful)throw Error('Direct TSE access unavailable');
+  return{results:next,checkedAt:new Date().toISOString(),receivedAt,changedAt,errors};
 }
 async function refresh(){
   if(busy)return;
-  busy=true;$('#refresh').disabled=true;$('#refresh').textContent='↻ Checking';
+  busy=true;nextAt=Date.now()+refreshInterval;$('#refresh').disabled=true;$('#refresh').textContent='↻ Fetching TSE';
   try{
-    const response=await fetch('./data/snapshot.json?check='+Date.now(),{cache:'no-store',signal:AbortSignal.timeout(18000)});
-    if(!response.ok)throw Error('Snapshot unavailable');
-    applySnapshot(await response.json());
+    let snapshot;
+    try{snapshot=await fetchLiveSnapshot();sourceMode='live';}
+    catch{
+      const response=await fetch('./data/snapshot.json?check='+Date.now(),{cache:'no-store',signal:AbortSignal.timeout(12000)});
+      if(!response.ok)throw Error('Snapshot unavailable');
+      snapshot=await response.json();sourceMode='snapshot';
+    }
+    applySnapshot(snapshot);
     try{localStorage.setItem(storageKey,JSON.stringify({results,checkedAt:collectedAt,...metadata,errors:Object.fromEntries([...failed].map(uf=>[uf,'Retained data']))}));}catch{}
     render();freshness();
   }catch{
-    $('#live-status').textContent='Offline · saved snapshot';
-    $('#live-status').style.color='#9b6a19';
-    $('#notice').firstElementChild.textContent='The published snapshot could not be checked. Showing the last available data.';
+    sourceMode='offline';freshness();
   }finally{
-    $('#refresh').disabled=false;$('#refresh').textContent='↻ Check snapshot';
-    nextAt=Date.now()+60000;busy=false;
+    $('#refresh').disabled=false;$('#refresh').textContent='↻ Refresh now';
+    busy=false;
   }
 }
 async function init(){
@@ -77,8 +103,9 @@ async function init(){
     shapes=data[0];baseline=data[1];results={};metadata={receivedAt:{},changedAt:{}};
     try{const saved=JSON.parse(localStorage.getItem(storageKey));if(saved)applySnapshot(saved);}catch{}
     applySnapshot(data[2]);mapGeometry();render();freshness();
-    nextAt=Date.now()+60000;
-    setInterval(()=>{if(!busy&&Date.now()>=nextAt)refresh();$('#next-update').textContent=busy?'Checking published snapshot…':'Check in '+Math.max(0,Math.ceil((nextAt-Date.now())/1000))+'s · new data ≈5 min';},1000);
+    document.addEventListener('visibilitychange',()=>{if(!document.hidden&&shapes.length&&!busy)refresh();});
+    refresh();
+    setInterval(()=>{if(!document.hidden&&!busy&&Date.now()>=nextAt)refresh();if(!busy)freshness();$('#next-update').textContent=document.hidden?'Paused while tab hidden':busy?'Fetching official TSE results…':'Next TSE check in '+Math.max(0,Math.ceil((nextAt-Date.now())/1000))+'s';},1000);
   }catch{
     $('#live-status').textContent='Unable to load';
     $('#notice').firstElementChild.textContent='The dashboard could not load. Use Refresh to try again.';
